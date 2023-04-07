@@ -27,3 +27,6 @@ override PG_CXXFLAGS += -Wno-register 	# PostgreSQL uses the register storage cl
 
 PGXS := $(shell $(PG_CONFIG) --pgxs)
 include $(PGXS)
+
+parser: src/parser
+	g++ -std=c++17 -o parser src/parser.cpp
