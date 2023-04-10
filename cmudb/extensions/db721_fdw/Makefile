@@ -18,6 +18,7 @@ PG_CONFIG ?= pg_config
 
 override PG_CXXFLAGS += -std=c++17 		# We generally use C++17.
 override PG_CXXFLAGS += -Wno-register 	# PostgreSQL uses the register storage class.
+override PG_CXXFLAGS += -fno-exceptions 	# c++ should not propagate exceptions to C code.
 
 # From "man gcc",
 # > If you use multiple -O options, with or without level numbers, the last such option is the one that is effective.
