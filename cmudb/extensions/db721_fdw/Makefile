@@ -28,6 +28,3 @@ override PG_CXXFLAGS += -fno-exceptions 	# c++ should not propagate exceptions t
 
 PGXS := $(shell $(PG_CONFIG) --pgxs)
 include $(PGXS)
-
-parser: src/parser
-	g++ -std=c++17 -o parser src/parser.cpp

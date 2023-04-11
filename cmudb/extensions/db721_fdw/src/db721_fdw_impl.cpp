@@ -2,7 +2,7 @@
 // https://www.postgresql.org/docs/15/xfunc-c.html#EXTEND-CPP
 
 #include "dog.h"
-
+#include "parser.h"
 // clang-format off
 extern "C" {
 #include "../../../../src/include/postgres.h"
@@ -27,14 +27,13 @@ typedef struct db721FdwExecState
 {
   char * filename;
   char * tablename;
+  db721_Parser parser;
 } db721FdwExecState;
 
 // Obtain relation size estimates for a foreign table.
 extern "C" void db721_GetForeignRelSize(PlannerInfo *root, RelOptInfo *baserel,
                                       Oid foreigntableid) {
-  // TODO(721): Write me!
-  Dog terrier("Terrier");
-  elog(LOG, "db721_GetForeignRelSize: %s", terrier.Bark().c_str());
+  elog(LOG, "db721_GetForeignRelSize"); 
   db721FdwPlanState *fdw_private = (db721FdwPlanState *)palloc0(sizeof(db721FdwPlanState));
   // Get table Name of Relation
   ForeignTable* table;
@@ -136,23 +135,24 @@ extern "C" void db721_BeginForeignScan(ForeignScanState *node, int eflags) {
       fdw_state->tablename = defGetString(def);
     }
   }
-
   if (eflags & EXEC_FLAG_EXPLAIN_ONLY) {
     return;
   }
+  fdw_state->parser.init(fdw_state->filename);
   node->fdw_state = (void *)fdw_state;
-  elog(LOG, "db721_GetForeignPlan: %s", fdw_state->filename);
+  elog(LOG, "db721_BeginForeignScan: %s", fdw_state->filename);
 }
 
 // Fetch one row from the foreign source, returning it in a tuple table slot 
 // (the node's ScanTupleSlot should be used for this purpose). Return NULL if no more rows are available. 
 extern "C" TupleTableSlot *db721_IterateForeignScan(ForeignScanState *node) {
   // TODO(721): Write me!
-  elog(LOG, "db721_IterateForeignScan");
   db721FdwExecState *fdw_state = (db721FdwExecState *)node->fdw_state;
   TupleTableSlot *slot = node->ss.ss_ScanTupleSlot;
-  // bool found = false;
-  elog(LOG, "db721_IterateForeignScan: %s", fdw_state->filename);
+  ExecClearTuple(slot);
+  if (fdw_state->parser.next(slot)) {
+    ExecStoreVirtualTuple(slot);
+  }
   return slot;
 }
 
@@ -162,6 +162,7 @@ extern "C" TupleTableSlot *db721_IterateForeignScan(ForeignScanState *node) {
 extern "C" void db721_ReScanForeignScan(ForeignScanState *node) {
   // TODO(721): Write me!
   db721FdwExecState *fdw_state = (db721FdwExecState *)node->fdw_state;
+  fdw_state->parser.reset();
   elog(LOG, "db721_ReScanForeignScan: %s", fdw_state->filename);
 }
 
@@ -171,6 +172,9 @@ extern "C" void db721_ReScanForeignScan(ForeignScanState *node) {
 extern "C" void db721_EndForeignScan(ForeignScanState *node) {
   // TODO(721): Write me!
   db721FdwExecState *fdw_state = (db721FdwExecState *)node->fdw_state;
+  fdw_state->parser.close();
+  pfree(fdw_state->filename);
+  pfree(fdw_state->tablename);
   elog(LOG, "db721_EndForeignScan: %s", fdw_state->filename);
   pfree(fdw_state);
 }

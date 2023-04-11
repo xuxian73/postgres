@@ -1,21 +1,22 @@
-#undef vsnprintf
-#undef snprintf
-#undef vsprintf
-#undef sprintf
-#undef vfprintf
-#undef fprintf
-#undef vprintf
-#undef printf
-#undef gettext
-#undef dgettext
-#undef ngettext
-#undef dngettext
-
+extern "C" {
+    #include "../../../../src/include/postgres.h"
+    #include "../../../../src/include/fmgr.h"
+    #include "../../../../src/include/executor/tuptable.h"
+}
 // #include "dog.h"
 #include "fstream"
 #include "string.h"
 #include <vector>
 #include <iostream>
+
+// #define db721_DEBUG
+
+enum db721_Type
+{
+    db721_INT,
+    db721_FLOAT,
+    db721_STR
+};
 
 struct BlockStats
 {
@@ -32,14 +33,14 @@ struct BlockStats
     } min_value;
     int32_t min_len = 0;
     int32_t max_len = 0;
-    std::string max_value_str;
-    std::string min_value_str;
+    char* max_value_str;
+    char* min_value_str;
 };
 
 struct db721_Column
 {
-    std::string name;
-    std::string type;
+    char* name;
+    db721_Type type;
     // the offset in the file for the first block of this column
     int32_t start_offset;
     // the number of blocks for this column
@@ -49,11 +50,31 @@ struct db721_Column
 
 struct MetaData
 {
-    std::string table;
+    char* table;
     int32_t max_value_per_block;
     int32_t num_columns;
     std::vector<db721_Column> columns;
 };
+
+db721_Type db721_getType(char* type) {
+    if (strcmp(type, "int") == 0)
+    {
+        return db721_INT;
+    }
+    else if (strcmp(type, "float") == 0)
+    {
+        return db721_FLOAT;
+    }
+    else if (strcmp(type, "str") == 0)
+    {
+        return db721_STR;
+    }
+    else
+    {
+        std::cout << "Error: Unknown type: " << type << std::endl;
+        return db721_INT;
+    }
+}
 
 inline void eatWhiteSpace(char *buf, int &pos)
 {
@@ -78,14 +99,14 @@ inline void eatString(char *buf, std::string str, int &pos)
     }
 }
 
-inline void getString(char *buf, std::string *str, int &pos)
+inline void getString(char *buf, char *&str, int &pos)
 {
-    str->clear();
+    int tmp = pos;
     while (buf[pos] != '"')
     {
-        str->push_back(buf[pos]);
         pos++;
     }
+    str = pnstrdup(buf + tmp, pos - tmp);
 }
 
 inline void getInt(char *buf, int *num, int &pos)
@@ -119,7 +140,7 @@ inline void eatComma(char *buf, int &pos)
     eatWhiteSpace(buf, pos);
 }
 
-inline void eatStrAttr(char *buf, std::string attr, std::string *str, int &pos)
+inline void eatStrAttr(char *buf, std::string attr, char *&str, int &pos)
 {
     eatString(buf, "\"" + attr + "\": \"", pos);
     getString(buf, str, pos);
@@ -144,25 +165,25 @@ inline void eatFloatAttr(char *buf, std::string attr, float *num, int &pos)
 
 void eatTable(char *buf, int &pos, MetaData *metaData)
 {
-    eatStrAttr(buf, "Table", &metaData->table, pos);
+    eatStrAttr(buf, "Table", metaData->table, pos);
 }
 
-void eatBlockStat(char *buf, int &pos, std::string &type, BlockStats *blockStat)
+void eatBlockStat(char *buf, int &pos, db721_Type type, BlockStats *blockStat)
 {
-    if (type == "float")
+    if (type == db721_FLOAT)
     {
         eatFloatAttr(buf, "min", &blockStat->min_value.f, pos);
         eatFloatAttr(buf, "max", &blockStat->max_value.f, pos);
     }
-    else if (type == "int")
+    else if (type == db721_INT)
     {
         eatIntAttr(buf, "min", &blockStat->min_value.i, pos);
         eatIntAttr(buf, "max", &blockStat->max_value.i, pos);
     }
-    else if (type == "str")
+    else if (type == db721_STR)
     {
-        eatStrAttr(buf, "min", &blockStat->min_value_str, pos);
-        eatStrAttr(buf, "max", &blockStat->max_value_str, pos);
+        eatStrAttr(buf, "min", blockStat->min_value_str, pos);
+        eatStrAttr(buf, "max", blockStat->max_value_str, pos);
         eatIntAttr(buf, "min_len", &blockStat->min_len, pos);
         eatIntAttr(buf, "max_len", &blockStat->max_len, pos);
     }
@@ -171,7 +192,9 @@ void eatBlockStat(char *buf, int &pos, std::string &type, BlockStats *blockStat)
 void eatSingleColumn(char *buf, int &pos, db721_Column *column)
 {
     int index = 0;
-    eatStrAttr(buf, "type", &column->type, pos);
+    char * type;
+    eatStrAttr(buf, "type", type, pos);
+    column->type = db721_getType(type);
     eatString(buf, "\"block_stats\": {", pos);
     while (buf[pos] != '}')
     {
@@ -183,6 +206,7 @@ void eatSingleColumn(char *buf, int &pos, db721_Column *column)
         eatString(buf, "}", pos);
         eatWhiteSpace(buf, pos);
         eatComma(buf, pos);
+        ++index;
     }
     eatString(buf, "}", pos);
     eatComma(buf, pos);
@@ -196,9 +220,9 @@ void eatColumns(char *buf, int &pos, std::vector<db721_Column> *columns)
     eatString(buf, "\"Columns\": {", pos);
     while (buf[pos] != '}')
     {
-        db721_Column *column = new db721_Column();
+        db721_Column *column = (db721_Column*)palloc0(sizeof(db721_Column));
         eatString(buf, "\"", pos);
-        getString(buf, &column->name, pos);
+        getString(buf, column->name, pos);
         eatString(buf, "\": {", pos);
         eatSingleColumn(buf, pos, column);
         eatString(buf, "}", pos);
@@ -223,9 +247,9 @@ int parseMetaData(char *buf, MetaData *metaData)
     eatString(buf, "{", pos);
     eatTable(buf, pos, metaData);
     eatColumns(buf, pos, &metaData->columns);
+    metaData->num_columns = metaData->columns.size();
     eatMaxValuePerBlock(buf, pos, metaData);
 #ifdef db721_DEBUG
-    std::cout << "table: " << metaData->table << std::endl;
     for (size_t i = 0; i < metaData->columns.size(); i++)
     {
         std::cout << "column: " << metaData->columns[i].name << std::endl;
@@ -235,17 +259,17 @@ int parseMetaData(char *buf, MetaData *metaData)
         for (size_t j = 0; j < metaData->columns[i].block_stats.size(); j++)
         {
             std::cout << "num: " << metaData->columns[i].block_stats[j].num << std::endl;
-            if (metaData->columns[i].type == "float")
+            if (metaData->columns[i].type == db721_FLOAT)
             {
                 std::cout << "max_value: " << metaData->columns[i].block_stats[j].max_value.f << std::endl;
                 std::cout << "min_value: " << metaData->columns[i].block_stats[j].min_value.f << std::endl;
             }
-            else if (metaData->columns[i].type == "int")
+            else if (metaData->columns[i].type == db721_INT)
             {
                 std::cout << "max_value: " << metaData->columns[i].block_stats[j].max_value.i << std::endl;
                 std::cout << "min_value: " << metaData->columns[i].block_stats[j].min_value.i << std::endl;
             }
-            else if (metaData->columns[i].type == "str")
+            else if (metaData->columns[i].type == db721_STR)
             {
                 std::cout << "max_value: " << metaData->columns[i].block_stats[j].max_value_str << std::endl;
                 std::cout << "min_value: " << metaData->columns[i].block_stats[j].min_value_str << std::endl;
@@ -259,24 +283,100 @@ int parseMetaData(char *buf, MetaData *metaData)
     return 0;
 }
 
-void parseFile(char *fileName, MetaData *metaData)
-{
-    std::fstream file;
-    file.open(fileName);
-    int fileLen = file.seekg(0, std::ios::end).tellg();
-    file.seekg(fileLen - 4, std::ios::beg);
-    int metaLen;
-    file.read((char *)&metaLen, 4);
-    file.seekg(fileLen - 4 - metaLen, std::ios::beg);
-    char *buf = new char[metaLen];
-    file.read(buf, metaLen);
-    parseMetaData(buf, metaData);
-    file.close();
-}
-
-int main(int argc, char **argv)
-{
+struct db721_Parser {
     MetaData metaData;
-    parseFile(argv[1], &metaData);
-    return 0;
-}
+    char ** block_buf;
+    int32_t current_block_id;
+    int32_t current_index;
+    char * fileName;
+
+    void init(const char *fileName)
+    {
+        std::fstream file;
+        this->fileName = pstrdup(fileName);
+        file.open(fileName);
+        int fileLen = file.seekg(0, std::ios::end).tellg();
+        file.seekg(fileLen - 4, std::ios::beg);
+        int metaLen;
+        file.read((char *)&metaLen, 4);
+        file.seekg(fileLen - 4 - metaLen, std::ios::beg);
+        char *buf = (char*)palloc0_array(char, metaLen);
+        file.read(buf, metaLen);
+        parseMetaData(buf, &this->metaData);
+        pfree((void*)buf);
+        file.close();
+        this->block_buf = (char**)palloc0_array(char *, this->metaData.num_columns);
+        for (int i = 0; i < this->metaData.num_columns; i++)
+        {
+            int value_size = this->metaData.columns[i].type == db721_STR ? 32 : 4;
+            this->block_buf[i] = (char*)palloc0_array(char, this->metaData.max_value_per_block * value_size);
+        }
+        readBlock(0);
+    }
+
+    void readBlock(int32_t block_id) {
+        std::fstream file;
+        file.open(this->fileName);
+        for (int i = 0; i < this->metaData.num_columns; i++)
+        {
+            int value_size = this->metaData.columns[i].type == db721_STR ? 32 : 4;
+            file.seekg(this->metaData.columns[i].start_offset + block_id * this->metaData.max_value_per_block * value_size, std::ios::beg);
+            file.read(this->block_buf[i], this->metaData.columns[i].block_stats[block_id].num * value_size);
+            // elog(INFO, "read block %d, column %d, num %d", block_id, i, this->metaData.columns[i].block_stats[block_id].num);
+        }
+        file.close();
+    }
+
+    bool next(TupleTableSlot *slot) {
+        MemSet(slot->tts_values, 0, sizeof(Datum) * slot->tts_tupleDescriptor->natts);
+        MemSet(slot->tts_isnull, false, sizeof(bool) * slot->tts_tupleDescriptor->natts);
+        for (int i = 0; i < this->metaData.num_columns; i++)
+        {
+            char *buf = this->block_buf[i];
+            if (this->metaData.columns[i].type == db721_STR)
+            {
+                char * buffer = buf + this->current_index * 32;
+                int len = strlen(buffer);
+                VarChar *destination = (VarChar *) palloc(VARHDRSZ + len);
+                SET_VARSIZE(destination, VARHDRSZ + len);
+                memcpy(destination->vl_dat, buffer, len);
+                slot->tts_values[i] = PointerGetDatum(destination);
+            }
+            else if (this->metaData.columns[i].type == db721_INT)
+            {
+                slot->tts_values[i] = Int32GetDatum(((int32_t*)buf)[current_index]);
+            }
+            else if (this->metaData.columns[i].type == db721_FLOAT)
+            {
+                slot->tts_values[i] = Float4GetDatum(((float*)buf)[current_index]);
+            }
+        }
+        this->current_index++;
+        if (this->current_index >= this->metaData.columns[0].block_stats[this->current_block_id].num) {
+            this->current_index = 0;
+            this->current_block_id++;
+            if (this->current_block_id >= this->metaData.columns[0].num_blocks) {
+                return false;
+            }
+            readBlock(this->current_block_id);
+        }
+        return true;
+    }
+
+    void reset() {
+        if (current_block_id != 0) {
+            readBlock(0);
+            this->current_block_id = 0;
+        }
+        this->current_index = 0;
+    }
+
+    void close()
+    {
+        for (int i = 0; i < this->metaData.num_columns; i++)
+        {
+            pfree(this->block_buf[i]);
+        }
+        pfree(this->block_buf);
+    }
+};
