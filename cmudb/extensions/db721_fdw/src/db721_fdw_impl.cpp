@@ -12,8 +12,11 @@ extern "C" {
 #include "../../../../src/include/commands/defrem.h"
 #include "../../../../src/include/optimizer/pathnode.h"
 #include "../../../../src/include/optimizer/planmain.h"
+#include "../../../../src/include/optimizer/optimizer.h"
 #include "../../../../src/include/executor/executor.h"
 #include "../../../../src/include/utils/rel.h"
+#include "../../../../src/include/access/table.h"
+#include "../../../../src/include/nodes/makefuncs.h"
 }
 // clang-format on
 
@@ -29,6 +32,65 @@ typedef struct db721FdwExecState
   char * tablename;
   db721_Parser parser;
 } db721FdwExecState;
+
+bool getWhereClause(RelOptInfo *baserel, Oid foreigntableid, List **columns) {
+  Bitmapset *attrs_used = NULL;
+  ListCell *lc;
+  Relation rel;
+  TupleDesc tupleDesc;
+  AttrNumber attnum;
+  bool has_wholerow = false;
+  pull_varattnos((Node *) baserel->reltarget->exprs, baserel->relid,
+				   &attrs_used);
+  elog(LOG, "target expres: %s", nodeToString(baserel->reltarget->exprs));
+  foreach(lc, baserel->baserestrictinfo) {
+    RestrictInfo *rinfo = (RestrictInfo *) lfirst(lc);
+    elog(LOG, "restrict info: %s", nodeToString(rinfo));
+    elog(LOG, "where clause: %s", nodeToString(rinfo->clause));
+    if (rinfo->pseudoconstant)
+      continue;
+    pull_varattnos((Node *) rinfo->clause, baserel->relid, &attrs_used);
+  }
+  /* Convert attribute numbers to column names. */
+	rel = table_open(foreigntableid, AccessShareLock);
+	tupleDesc = RelationGetDescr(rel);
+
+	while ((attnum = bms_first_member(attrs_used)) >= 0)
+	{
+		/* Adjust for system attributes. */
+		attnum += FirstLowInvalidHeapAttributeNumber;
+
+		if (attnum == 0)
+		{
+			has_wholerow = true;
+			break;
+		}
+
+		/* Ignore system attributes. */
+		if (attnum < 0)
+			continue;
+
+		/* Get user attributes. */
+		if (attnum > 0)
+		{
+			Form_pg_attribute attr = TupleDescAttr(tupleDesc, attnum - 1);
+			char	   *attname = NameStr(attr->attname);
+			/*
+			 * Skip generated columns (COPY won't accept them in the column
+			 * list)
+			 */
+			if (attr->attgenerated)
+				continue;
+			*columns = lappend(*columns, makeString(pstrdup(attname)));
+		}
+	}
+  table_close(rel, AccessShareLock);
+  if (has_wholerow) {
+    *columns = NIL;
+    return false;
+  }
+  return true;
+}
 
 // Obtain relation size estimates for a foreign table.
 extern "C" void db721_GetForeignRelSize(PlannerInfo *root, RelOptInfo *baserel,
@@ -74,8 +136,11 @@ extern "C" void db721_GetForeignPaths(PlannerInfo *root, RelOptInfo *baserel,
   db721FdwPlanState *fdw_private = (db721FdwPlanState *) baserel->fdw_private;
   Cost startup_cost = 0.0;
   Cost total_cost = 0.0;
-  List *fdw_private_list = NIL;
-  fdw_private_list = lappend(fdw_private_list, fdw_private);
+  // List *columns;
+  // List *whereClauseCol = NIL;
+  // if (getWhereClause(baserel, foreigntableid, &whereClauseCol)) {
+  //    whereClauseCol = list_make1(makeDefElem("whereClause", (Node *) columns, -1));
+  // }
   add_path(baserel, (Path *)
     create_foreignscan_path(root, 
                             baserel, 
@@ -90,6 +155,22 @@ extern "C" void db721_GetForeignPaths(PlannerInfo *root, RelOptInfo *baserel,
   elog(LOG, "db721_GetForeignPaths, %s", fdw_private->filename);
 }
 
+List *
+extract_actual_clauses(List *restrictinfo_list, bool pseudoconstant)
+{
+	List	   *result = NIL;
+	ListCell   *l;
+
+	foreach(l, restrictinfo_list)
+	{
+		RestrictInfo *rinfo = lfirst_node(RestrictInfo, l);
+    elog(LOG, "extract_actual_clauses: %s", nodeToString(rinfo->clause));
+    if (rinfo->pseudoconstant == pseudoconstant)
+		  result = lappend(result, rinfo->clause);
+  }
+	return result;
+}
+
 // Create a ForeignScan plan node from the selected foreign access path. 
 // This is called at the end of query planning. 
 extern "C" ForeignScan *
@@ -100,6 +181,7 @@ db721_GetForeignPlan(PlannerInfo *root, RelOptInfo *baserel, Oid foreigntableid,
   Dog rover("Rover");
   elog(LOG, "db721_GetForeignPlan: %s", rover.Bark().c_str());
   // db721FdwPlanState *db721_plan_state = best_path->fdw_private->elements[0].ptr_value;
+  scan_clauses = extract_actual_clauses(scan_clauses, false);
   return make_foreignscan(tlist, 
                           scan_clauses, 
                           baserel->relid, 
@@ -116,7 +198,7 @@ db721_GetForeignPlan(PlannerInfo *root, RelOptInfo *baserel, Oid foreigntableid,
 // first call to IterateForeignScan). 
 extern "C" void db721_BeginForeignScan(ForeignScanState *node, int eflags) {
   elog(LOG, "db721_BeginForeignScan");
-  ForeignScan *db721_plan = (ForeignScan *)node->ss.ps.plan;
+  // ForeignScan *db721_plan = (ForeignScan *)node->ss.ps.plan;
   
   db721FdwExecState *fdw_state = (db721FdwExecState *)palloc0(sizeof(db721FdwExecState));
   ForeignTable* table;
