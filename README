@@ -9,7 +9,7 @@ PostgreSQL implements portions of the SQL/MED specification as documented in the
 This project write a foreign data wrapper for custom columnar file format db721. 
 
 ## Roadmap
-[-] Write a db721 parser
-[-] Implement SELECT * for the FDW 
-[-] Implement support for WHERE clauses for the FDW 
-[-] Implement the predicate pushdown and projection pushdown
+[done] Write a db721 parser
+[done] Implement SELECT * for the FDW 
+[done] Implement support for WHERE clauses for the FDW 
+[done] Implement the predicate pushdown and projection pushdown
